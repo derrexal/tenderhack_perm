@@ -1310,54 +1310,6 @@ def build_ste_price_docx(
 app = FastAPI(title="TenderHack Price Justification")
 
 
-@app.post("/api/v1/price-justification/doc")
-async def generate_price_justification(payload: JustificationRequest) -> Response:
-    try:
-        DATA_REPO.ensure_loaded()
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    report = analyze_contract(payload.contract, payload.items, DATA_REPO, payload.maxSamples)
-
-    doc_content = build_document(
-        contract=report.contract,
-        items=report.items,
-        analysis=report.analysis,
-        total_value=report.total_value,
-        currency=payload.currency,
-    )
-
-    filename = "justification.doc"
-    headers = {"Content-Disposition": f"attachment; filename={filename}"}
-    return Response(content=doc_content, media_type="application/msword", headers=headers)
-
-
-@app.post("/api/v1/price-justification/batch/doc")
-async def generate_batch_price_justification(payload: BatchJustificationRequest) -> Response:
-    try:
-        DATA_REPO.ensure_loaded()
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    if not payload.contracts:
-        raise HTTPException(status_code=400, detail="contracts не должен быть пустым")
-
-    reports = [
-        analyze_contract(bundle.contract, bundle.items, DATA_REPO, payload.maxSamples)
-        for bundle in payload.contracts
-    ]
-
-    doc_content = build_batch_document(
-        reports=reports,
-        currency=payload.currency,
-        report_title=payload.reportTitle,
-    )
-
-    filename = "justification_batch.doc"
-    headers = {"Content-Disposition": f"attachment; filename={filename}"}
-    return Response(content=doc_content, media_type="application/msword", headers=headers)
-
-
 @app.post("/api/v1/ste-price-justification/doc")
 async def generate_ste_price_justification(payload: StePriceJustificationRequest) -> Response:
     if not payload.items:
