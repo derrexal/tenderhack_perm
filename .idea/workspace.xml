@@ -8,11 +8,12 @@
       <change afterPath="$PROJECT_DIR$/justification_sample.doc" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/raw_data/TenderHack_Контракты_20260313.xlsx" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/raw_data/TenderHack_СТЕ_20260313.xlsx" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ste_payload_new.json" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/ste_price_justification.doc" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/ste_price_justification_2.doc" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/ste_price_justification_3.doc" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/ste_price_justification_4.doc" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/~$e_price_justification_2.doc" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ste_price_justification_5.doc" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
@@ -61,7 +62,7 @@
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
     "git-widget-placeholder": "main",
     "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "/Users/derrexal/PycharmProjects/tenderhack_perm/raw_data",
+    "last_opened_file_path": "/Users/derrexal/PycharmProjects/tenderhack_perm",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -73,6 +74,7 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$" />
       <recent name="$PROJECT_DIR$/raw_data" />
     </key>
   </component>
@@ -91,7 +93,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1773413252602</updated>
-      <workItem from="1773413253622" duration="10400000" />
+      <workItem from="1773413253622" duration="15421000" />
     </task>
     <task id="LOCAL-00001" summary="init">
       <option name="closed" value="true" />
@@ -109,7 +111,15 @@
       <option name="project" value="LOCAL" />
       <updated>1773481564301</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="init">
+      <option name="closed" value="true" />
+      <created>1773482365388</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1773482365388</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

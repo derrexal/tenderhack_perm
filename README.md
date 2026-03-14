@@ -4,8 +4,8 @@
 
 **Что внутри**
 - FastAPI приложение: `main.py`.
-- Встроенная обработка `.xlsx` без внешних библиотек для чтения.
-- Генерация документов: `.docx` со стилями и табличным оформлением.
+- Генерация документов `.docx` на основе шаблона `report_template.docx`.
+- Работа со стилями и таблицами через `python-docx`.
 
 **Требования**
 - Python 3.10+
@@ -28,93 +28,61 @@ uvicorn main:app --reload
 - `POST /api/v1/ste-price-justification/doc`
 - Возвращает файл `ste_price_justification.docx` (DOCX со стилями)
 
-Пример запроса:
+Пример запроса (использует готовый файл `ste_payload_new.json`):
 ```bash
 curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
   -H "Content-Type: application/json" \
-  --data @ste_payload.json \
+  --data @ste_payload_new.json \
   --output ste_price_justification.docx
 ```
 
 ## Примечания
 
-- Генерация DOCX использует `python-docx` и формирует именованные стили, без локального форматирования.
-- Документы формируются через `python-docx` с именованными стилями.
-- Если таблица в DOCX должна быть уже или шире, параметры задаются в `build_ste_price_docx`.
+- Документы формируются на основе шаблона `~/Documents/report_template.docx`.
+- Если структура шаблона меняется, обновите заполнение в `build_ste_price_docx_from_template`.
 
 ## Модели (контракты)
 
-**Ste**
+**StePriceTemplateRequest**
 ```json
 {
-  "id": 35927039,
-  "name": "Холодильник Haier MSR115 белый",
-  "category": "Холодильники",
-  "manufacturer": "Haier",
-  "characteristics": "Объем:92;Цвет:белый"
-}
-```
-
-**Contract**
-```json
-{
-  "id": 204746787,
-  "procurementName": "Поставка кухонного бытового оборудования",
-  "procurementMethod": "Контракт по итогам котировочной сессии",
-  "initialContractValue": "71091.90",
-  "contractValueAfterSigning": "71091.90",
-  "reductionPercent": "0.00",
-  "vatRate": "20%",
-  "contractSigningDate": "2025-12-01 14:32:09.307",
-  "buyerInn": "9718159964",
-  "buyerRegion": "Москва",
-  "supplierInn": "7729101722",
-  "supplierRegion": "Москва"
-}
-```
-
-**ContractItemWithSte**
-```json
-{
-  "id": 1,
-  "steId": 35927039,
-  "steItemName": "Холодильник Haier MSR115 белый",
-  "quantity": "1.0",
-  "unit": "шт",
-  "unitPrice": "23760.00",
-  "steName": "Холодильник Haier MSR115 белый",
-  "steCategory": "Холодильники",
-  "steManufacturer": "Haier",
-  "steCharacteristics": "Объем:92;Цвет:белый"
-}
-```
-
-**StePriceJustificationRow**
-```json
-{
-  "contractId": "204746787",
-  "procurementMethod": "Контракт по итогам котировочной сессии",
-  "initialContractValue": "71091.90",
-  "contractValueAfterSigning": "71091.90",
-  "reductionPercent": "0.00",
-  "contractSigningDate": "2025-12-01 14:32:09.307",
-  "buyerInn": "9718159964",
-  "supplierInn": "7729101722",
-  "steId": 35927039,
-  "steItemName": "Холодильник Haier MSR115 белый",
-  "unitPrice": "23760.00"
+  "contractName": "Наименование закупки",
+  "summaryPrice": 5123,
+  "position": {
+    "positionName": "Наименование предмета закупки",
+    "positionPrice": 12345,
+    "items": [
+      {
+        "contractId": "205604468",
+        "procurementMethod": "Контракт по итогам конкурентной процедуры",
+        "initialContractValue": "49200.00000",
+        "contractValueAfterSigning": "49200.00000",
+        "reductionPercent": "0.00000000000000",
+        "contractSigningDate": "2025-01-13 00:00:00.000",
+        "buyerInn": "7720093523",
+        "supplierInn": "7804710797",
+        "supplierRegion": "Санкт-Петербург",
+        "quantity": "1",
+        "unit": "шт",
+        "steId": 38499393,
+        "steItemName": "Медеран пор. лиофил. д/приг. р-ра д/инъекц. и инф. 50 мг фл/в компл. с р-лем №1х1 Meone HealthCare Pvt.Ltd Индия",
+        "unitPrice": "164.00000000000"
+      }
+    ]
+  },
+  "currency": "RUB"
 }
 ```
 
 ## Примеры payload
 
 **Готовый payload (СТЕ)**  
-Файл: `ste_payload.json`
+Файл: `ste_payload_new.json`
 
 Команда:
 ```bash
 curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
   -H "Content-Type: application/json" \
-  --data @ste_payload.json \
+  --data @ste_payload_new.json \
   --output ste_price_justification.docx
 ```

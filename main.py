@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 DATA_DIR = Path(__file__).parent / "raw_data"
 CONTRACTS_FILE = DATA_DIR / "TenderHack_Контракты_20260313.xlsx"
 STE_FILE = DATA_DIR / "TenderHack_СТЕ_20260313.xlsx"
+TEMPLATE_PATH = Path.home() / "Documents" / "report_template.docx"
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 SAMPLE_LIMIT = 5
@@ -97,21 +98,25 @@ class StePriceJustificationRow(BaseModel):
     contractSigningDate: Optional[str] = None
     buyerInn: Optional[str] = None
     supplierInn: Optional[str] = None
+    supplierRegion: Optional[str] = None
+    quantity: Optional[str] = None
+    unit: Optional[str] = None
     steId: Optional[int] = None
     steItemName: Optional[str] = None
     unitPrice: Optional[str] = None
 
 
-class StePriceJustificationRequest(BaseModel):
+class StePositionPayload(BaseModel):
+    positionName: str
+    positionPrice: Optional[Decimal] = None
     items: List[StePriceJustificationRow]
+
+
+class StePriceTemplateRequest(BaseModel):
+    contractName: str
+    summaryPrice: Decimal
+    position: StePositionPayload
     currency: str = Field(default=DEFAULT_CURRENCY, description="Код валюты, по умолчанию RUB")
-    reportTitle: Optional[str] = Field(
-        default=None, description="Заголовок отчета. Если не задан, используется стандартный."
-    )
-    steId: Optional[int] = Field(default=None, description="Идентификатор СТЕ (если нужно зафиксировать)")
-    steItemName: Optional[str] = Field(default=None, description="Наименование СТЕ (если нужно зафиксировать)")
-    signerName: Optional[str] = Field(default=None, description="ФИО подписанта")
-    signerTitle: Optional[str] = Field(default=None, description="Должность подписанта")
 
 
 @dataclass
@@ -282,6 +287,169 @@ def format_optional_date(value: Optional[str]) -> str:
     if parsed is None:
         return str(value)
     return parsed.strftime("%d.%m.%Y")
+
+
+def _ru_plural(value: int, one: str, few: str, many: str) -> str:
+    value = abs(value) % 100
+    if 11 <= value <= 19:
+        return many
+    last = value % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
+
+
+def _ru_triad_to_words(value: int, gender: str) -> List[str]:
+    ones_m = ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"]
+    ones_f = ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"]
+    teens = [
+        "десять",
+        "одиннадцать",
+        "двенадцать",
+        "тринадцать",
+        "четырнадцать",
+        "пятнадцать",
+        "шестнадцать",
+        "семнадцать",
+        "восемнадцать",
+        "девятнадцать",
+    ]
+    tens = ["", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"]
+    hundreds = ["", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"]
+
+    words: List[str] = []
+    if value == 0:
+        return words
+    h = value // 100
+    if h:
+        words.append(hundreds[h])
+    t = value % 100
+    if 10 <= t <= 19:
+        words.append(teens[t - 10])
+        return words
+    ten = t // 10
+    if ten:
+        words.append(tens[ten])
+    unit = t % 10
+    if unit:
+        words.append((ones_f if gender == "f" else ones_m)[unit])
+    return words
+
+
+def _ru_number_to_words(value: int) -> str:
+    if value == 0:
+        return "ноль"
+    scales = [
+        (1_000_000_000, "миллиард", "миллиарда", "миллиардов", "m"),
+        (1_000_000, "миллион", "миллиона", "миллионов", "m"),
+        (1000, "тысяча", "тысячи", "тысяч", "f"),
+    ]
+    words: List[str] = []
+    remainder = value
+    for scale_value, one, few, many, gender in scales:
+        part = remainder // scale_value
+        if part:
+            words.extend(_ru_triad_to_words(part, gender))
+            words.append(_ru_plural(part, one, few, many))
+            remainder %= scale_value
+    words.extend(_ru_triad_to_words(remainder, "m"))
+    return " ".join(words).strip()
+
+
+def amount_to_rubles_words(amount: Decimal) -> str:
+    quantized = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    rubles = int(quantized)
+    kopeks = int((quantized - Decimal(rubles)) * 100)
+    rubles_words = _ru_number_to_words(rubles)
+    rubles_word = _ru_plural(rubles, "рубль", "рубля", "рублей")
+    kopeks_word = _ru_plural(kopeks, "копейка", "копейки", "копеек")
+    return f"{rubles_words} {rubles_word} {kopeks:02d} {kopeks_word}"
+
+
+def _replace_in_paragraph(paragraph, replacements: Dict[str, str]) -> None:
+    if not paragraph.text:
+        return
+    text = paragraph.text
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    if text != paragraph.text:
+        paragraph.text = text
+
+
+def _replace_placeholders(doc: Document, replacements: Dict[str, str]) -> None:
+    for paragraph in doc.paragraphs:
+        _replace_in_paragraph(paragraph, replacements)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    _replace_in_paragraph(paragraph, replacements)
+
+
+def _update_summary_paragraph(doc: Document, summary_price: Decimal) -> None:
+    price_text = format_decimal(summary_price)
+    words = amount_to_rubles_words(summary_price)
+    target = "Начальная (максимальная) цена контракта составляет:"
+    new_text = f"{target} {price_text} ({words})."
+    for paragraph in doc.paragraphs:
+        if target in paragraph.text:
+            paragraph.text = new_text
+            break
+
+
+def _update_report_date(doc: Document, report_date: str) -> None:
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if "Дата формирования обоснования" in cell.text:
+                    row.cells[-1].text = report_date
+                    return
+
+
+def _is_items_table(table) -> bool:
+    if not table.rows:
+        return False
+    header = [cell.text.strip().lower() for cell in table.rows[0].cells]
+    normalized = [h.replace("ё", "е") for h in header]
+    return len(normalized) >= 3 and "№" in normalized[0] and "идентификатор сте" in normalized[1]
+
+
+def _fill_items_table(
+    table,
+    items: List[StePriceJustificationRow],
+    summary_price: Optional[Decimal],
+) -> None:
+    while len(table.rows) > 1:
+        table._tbl.remove(table.rows[1]._tr)
+
+    for idx, item in enumerate(items, start=1):
+        row = table.add_row()
+        values = [
+            str(idx),
+            str(item.steId) if item.steId is not None else "",
+            item.steItemName or "",
+            item.contractId or "",
+            format_optional_date(item.contractSigningDate),
+            item.supplierInn or "",
+            item.quantity or "",
+            item.unit or "",
+            item.supplierRegion or "",
+            format_optional_decimal(item.unitPrice),
+        ]
+        for cell, value in zip(row.cells, values):
+            cell.text = value
+
+    if summary_price is not None and len(table.columns) >= 10:
+        summary_row = table.add_row()
+        for cell in summary_row.cells:
+            cell.text = ""
+        summary_row.cells[0].text = "начальная (максимальная) цена контракта"
+        merged = summary_row.cells[0]
+        for idx in range(1, 9):
+            merged = merged.merge(summary_row.cells[idx])
+        summary_row.cells[9].text = format_decimal(summary_price)
 
 
 def currency_label(code: str) -> str:
@@ -1064,243 +1232,25 @@ def build_ste_price_document(
     return builder.finish()
 
 
-def build_ste_price_docx(
-    request: StePriceJustificationRequest,
-    rows: List[StePriceJustificationRow],
-) -> bytes:
+def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> bytes:
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"Шаблон не найден: {TEMPLATE_PATH}")
+
+    doc = Document(TEMPLATE_PATH)
     today = date.today().strftime("%d.%m.%Y")
-    title = request.reportTitle or "Обоснование начальной цены стандартной товарной единицы"
 
-    ste_id_values = {row.steId for row in rows if row.steId is not None}
-    ste_name_values = {row.steItemName for row in rows if row.steItemName}
-    ste_id = request.steId or (next(iter(ste_id_values)) if ste_id_values else None)
-    ste_name = request.steItemName or (next(iter(ste_name_values)) if ste_name_values else None)
+    replacements = {
+        "{наименование закупки}": payload.contractName,
+        "{предмет закупки}": payload.position.positionName,
+    }
+    _replace_placeholders(doc, replacements)
+    _update_summary_paragraph(doc, payload.summaryPrice)
+    _update_report_date(doc, today)
 
-    prices = []
-    dates = []
-    for row in rows:
-        price = parse_decimal(row.unitPrice)
-        if price is not None:
-            prices.append(price)
-        dt = parse_datetime(row.contractSigningDate)
-        if dt:
-            dates.append(dt)
-
-    count = len(prices)
-    avg_price = sum(prices, Decimal("0")) / Decimal(count) if count else None
-    min_price = min(prices) if prices else None
-    max_price = max(prices) if prices else None
-    period = ""
-    if dates:
-        period = f"{min(dates).strftime('%d.%m.%Y')} — {max(dates).strftime('%d.%m.%Y')}"
-
-    doc = Document()
-    section = doc.sections[0]
-    section.orientation = WD_ORIENT.LANDSCAPE
-    section.page_width = Mm(297)
-    section.page_height = Mm(210)
-    section.left_margin = Mm(30)
-    section.right_margin = Mm(10)
-    section.top_margin = Mm(20)
-    section.bottom_margin = Mm(20)
-
-    styles = doc.styles
-    _ensure_paragraph_style(
-        styles,
-        "Основной текст",
-        font_name="Times New Roman",
-        font_size=14,
-        alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
-        line_spacing=1.5,
-        first_line_indent_cm=1.25,
-        space_before_pt=0,
-        space_after_pt=0,
-    )
-    _ensure_paragraph_style(
-        styles,
-        "Заголовок документа",
-        font_name="Times New Roman",
-        font_size=16,
-        bold=True,
-        alignment=WD_ALIGN_PARAGRAPH.CENTER,
-        line_spacing=1.0,
-        first_line_indent_cm=0,
-        space_before_pt=0,
-        space_after_pt=12,
-        based_on="Основной текст",
-    )
-    _ensure_paragraph_style(
-        styles,
-        "Подзаголовок",
-        font_name="Times New Roman",
-        font_size=14,
-        bold=True,
-        alignment=WD_ALIGN_PARAGRAPH.LEFT,
-        line_spacing=1.0,
-        first_line_indent_cm=0,
-        space_before_pt=6,
-        space_after_pt=6,
-        based_on="Основной текст",
-    )
-    _ensure_paragraph_style(
-        styles,
-        "Реквизиты",
-        font_name="Times New Roman",
-        font_size=12,
-        alignment=WD_ALIGN_PARAGRAPH.RIGHT,
-        line_spacing=1.0,
-        first_line_indent_cm=0,
-        space_before_pt=0,
-        space_after_pt=12,
-        based_on="Основной текст",
-    )
-    _ensure_paragraph_style(
-        styles,
-        "Список",
-        font_name="Times New Roman",
-        font_size=14,
-        alignment=WD_ALIGN_PARAGRAPH.LEFT,
-        line_spacing=1.5,
-        first_line_indent_cm=0,
-        space_before_pt=0,
-        space_after_pt=0,
-        based_on="Основной текст",
-    )
-    _ensure_paragraph_style(
-        styles,
-        "Подпись",
-        font_name="Times New Roman",
-        font_size=14,
-        alignment=WD_ALIGN_PARAGRAPH.RIGHT,
-        line_spacing=1.0,
-        first_line_indent_cm=0,
-        space_before_pt=12,
-        space_after_pt=0,
-        based_on="Основной текст",
-    )
-    _ensure_paragraph_style(
-        styles,
-        "Приложение",
-        font_name="Times New Roman",
-        font_size=12,
-        alignment=WD_ALIGN_PARAGRAPH.LEFT,
-        line_spacing=1.0,
-        first_line_indent_cm=0,
-        space_before_pt=6,
-        space_after_pt=6,
-        based_on="Основной текст",
-    )
-    _ensure_paragraph_style(
-        styles,
-        "Табличный текст",
-        font_name="Times New Roman",
-        font_size=11,
-        alignment=WD_ALIGN_PARAGRAPH.LEFT,
-        line_spacing=1.0,
-        first_line_indent_cm=0,
-        space_before_pt=0,
-        space_after_pt=0,
-        based_on="Основной текст",
-    )
-    _ensure_table_style(styles, "Таблица")
-
-    doc.add_paragraph(title, style="Заголовок документа")
-    doc.add_paragraph(f"Дата формирования: {today}", style="Реквизиты")
-
-    if ste_id is not None or ste_name:
-        ste_line = "СТЕ: "
-        if ste_id is not None:
-            ste_line += str(ste_id)
-        if ste_name:
-            ste_line += f" — {ste_name}"
-        doc.add_paragraph(ste_line, style="Основной текст")
-    if period:
-        doc.add_paragraph(f"Период данных: {period}", style="Основной текст")
-    doc.add_paragraph(
-        f"Количество сопоставимых контрактов: {len(rows)}", style="Основной текст"
-    )
-
-    if avg_price is not None:
-        doc.add_paragraph(
-            "Рекомендованная средняя цена: "
-            f"{format_decimal(avg_price)} {currency_label(request.currency)}",
-            style="Подзаголовок",
-        )
-
-    if len(ste_id_values) > 1:
-        doc.add_paragraph(
-            "Внимание: входные данные содержат несколько идентификаторов СТЕ.",
-            style="Основной текст",
-        )
-    if len(ste_name_values) > 1:
-        doc.add_paragraph(
-            "Внимание: входные данные содержат несколько наименований СТЕ.",
-            style="Основной текст",
-        )
-
-    headers = [
-        "№",
-        "ID контракта",
-        "Способ закупки",
-        "НМЦК",
-        "Цена после заключения",
-        "% снижения",
-        "Дата заключения",
-        "ИНН заказчика",
-        "ИНН поставщика",
-        "СТЕ",
-        "Позиция СТЕ",
-        "Цена за единицу",
-    ]
-
-    table = doc.add_table(rows=1, cols=len(headers))
-    table.style = "Таблица"
-    table.autofit = True
-    header_cells = table.rows[0].cells
-    for idx, text in enumerate(headers):
-        header_cells[idx].text = text
-        for paragraph in header_cells[idx].paragraphs:
-            paragraph.style = "Табличный текст"
-    _set_repeat_table_header(table.rows[0])
-
-    for idx, row in enumerate(rows, start=1):
-        cells = table.add_row().cells
-        values = [
-            str(idx),
-            row.contractId or "",
-            row.procurementMethod or "",
-            format_optional_decimal(row.initialContractValue),
-            format_optional_decimal(row.contractValueAfterSigning),
-            row.reductionPercent or "",
-            format_optional_date(row.contractSigningDate),
-            row.buyerInn or "",
-            row.supplierInn or "",
-            str(row.steId) if row.steId is not None else "",
-            row.steItemName or "",
-            format_optional_decimal(row.unitPrice),
-        ]
-        for cell, value in zip(cells, values):
-            cell.text = value
-            for paragraph in cell.paragraphs:
-                paragraph.style = "Табличный текст"
-
-    if avg_price is not None:
-        doc.add_paragraph(
-            "Средняя цена: "
-            f"{format_decimal(avg_price)} {currency_label(request.currency)}; "
-            "Минимальная цена: "
-            f"{format_decimal(min_price)} {currency_label(request.currency)}; "
-            "Максимальная цена: "
-            f"{format_decimal(max_price)} {currency_label(request.currency)}.",
-            style="Основной текст",
-        )
-
-    signer_title = request.signerTitle or "Должность"
-    signer_name = request.signerName or "ФИО"
-    doc.add_paragraph(
-        f"{signer_title}: ____________________ /{signer_name}/",
-        style="Подпись",
-    )
+    items = payload.position.items
+    for table in doc.tables:
+        if _is_items_table(table):
+            _fill_items_table(table, items, payload.summaryPrice)
 
     buf = BytesIO()
     doc.save(buf)
@@ -1311,11 +1261,11 @@ app = FastAPI(title="TenderHack Price Justification")
 
 
 @app.post("/api/v1/ste-price-justification/doc")
-async def generate_ste_price_justification(payload: StePriceJustificationRequest) -> Response:
-    if not payload.items:
-        raise HTTPException(status_code=400, detail="items не должен быть пустым")
+async def generate_ste_price_justification(payload: StePriceTemplateRequest) -> Response:
+    if not payload.position.items:
+        raise HTTPException(status_code=400, detail="position.items не должен быть пустым")
 
-    doc_content = build_ste_price_docx(payload, payload.items)
+    doc_content = build_ste_price_docx_from_template(payload)
     filename = "ste_price_justification.docx"
     headers = {"Content-Disposition": f"attachment; filename={filename}"}
     return Response(
