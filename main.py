@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 DATA_DIR = Path(__file__).parent / "raw_data"
 CONTRACTS_FILE = DATA_DIR / "TenderHack_Контракты_20260313.xlsx"
 STE_FILE = DATA_DIR / "TenderHack_СТЕ_20260313.xlsx"
-TEMPLATE_PATH = Path.home() / "Documents" / "report_template.docx"
+TEMPLATE_PATH = Path(__file__).parent / "report_template.docx"
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 SAMPLE_LIMIT = 5

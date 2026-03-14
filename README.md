@@ -4,7 +4,7 @@
 
 **Что внутри**
 - FastAPI приложение: `main.py`.
-- Генерация документов `.docx` на основе шаблона `report_template.docx`.
+- Генерация документов `.docx` на основе шаблона `report_template.docx` в корне репозитория.
 - Работа со стилями и таблицами через `python-docx`.
 
 **Требования**
@@ -28,7 +28,7 @@ uvicorn main:app --reload
 - `POST /api/v1/ste-price-justification/doc`
 - Возвращает файл `ste_price_justification.docx` (DOCX со стилями)
 
-Пример запроса (использует готовый файл `ste_payload_new.json`):
+Пример запроса (использует готовый файл `ste_payload_new.json` в корне репозитория):
 ```bash
 curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
   -H "Content-Type: application/json" \
@@ -38,7 +38,7 @@ curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
 
 ## Примечания
 
-- Документы формируются на основе шаблона `~/Documents/report_template.docx`.
+- Документы формируются на основе шаблона `report_template.docx` в корне репозитория.
 - Если структура шаблона меняется, обновите заполнение в `build_ste_price_docx_from_template`.
 
 ## Модели (контракты)
