@@ -28,6 +28,7 @@ from docx.shared import Cm, Mm, Pt
 from docx.table import Table, _Row
 from docx.text.paragraph import Paragraph
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -841,10 +842,20 @@ def _build_no_items_message(position: StePositionPayload) -> str:
         raise ValueError("positionName обязателен, так как items пуст.")
     if position.positionPrice is None:
         raise ValueError("positionPrice обязателен, так как items пуст.")
+    if not position.positionCount:
+        raise ValueError("positionCount обязателен, так как items пуст.")
+    count_decimal = parse_decimal(position.positionCount)
+    if count_decimal is None:
+        raise ValueError("positionCount должен быть числом, так как items пуст.")
     price_text = format_decimal(position.positionPrice)
+    total = (position.positionPrice * count_decimal).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    total_text = format_decimal(total)
     return (
         f"Данных для рассчета НПМЦ товара {position.positionName} недостаточно, "
-        f"выставлено ручное значение {price_text}."
+        f"выставлено ручное значение {price_text}. "
+        f"Итоговая сумма {price_text} x {position.positionCount} = {total_text}."
     )
 
 
@@ -1709,6 +1720,13 @@ def convert_docx_bytes(docx_bytes: bytes, target_ext: str) -> bytes:
 
 
 app = FastAPI(title="TenderHack Price Justification")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"http://(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)(:\\d+)?",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.post("/api/v1/ste-price-justification/doc")
