@@ -28,11 +28,12 @@ uvicorn main:app --reload
 - `POST /api/v1/ste-price-justification/doc`
 - Возвращает файл `ste_price_justification.docx` (DOCX со стилями)
 
-Пример запроса (использует готовый файл `ste_payload_new.json` в корне репозитория):
+**Быстрый старт (curl)**  
+Использует готовый файл `ste_price_request_example.json` в корне репозитория.
 ```bash
 curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
   -H "Content-Type: application/json" \
-  --data @ste_payload_new.json \
+  --data @ste_price_request_example.json \
   --output ste_price_justification.docx
 ```
 
@@ -40,6 +41,10 @@ curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
 
 - Документы формируются на основе шаблона `report_template.docx` в корне репозитория.
 - Если структура шаблона меняется, обновите заполнение в `build_ste_price_docx_from_template`.
+- Параметр `docType` позволяет запросить `docx`, `doc` или `pdf` (по умолчанию `docx`).
+- Каждая запись в `positions` создает отдельную таблицу и заголовок в документе.
+- Для конвертации в `doc` и `pdf` требуется LibreOffice на машине, где работает API (команда `soffice`).
+- Наличие Microsoft Word на клиентском компьютере не влияет на конвертацию — она происходит на сервере.
 
 ## Модели (контракты)
 
@@ -48,41 +53,58 @@ curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
 {
   "contractName": "Наименование закупки",
   "summaryPrice": 5123,
-  "position": {
-    "positionName": "Наименование предмета закупки",
-    "positionPrice": 12345,
-    "items": [
-      {
-        "contractId": "205604468",
-        "procurementMethod": "Контракт по итогам конкурентной процедуры",
-        "initialContractValue": "49200.00000",
-        "contractValueAfterSigning": "49200.00000",
-        "reductionPercent": "0.00000000000000",
-        "contractSigningDate": "2025-01-13 00:00:00.000",
-        "buyerInn": "7720093523",
-        "supplierInn": "7804710797",
-        "supplierRegion": "Санкт-Петербург",
-        "quantity": "1",
-        "unit": "шт",
-        "steId": 38499393,
-        "steItemName": "Медеран пор. лиофил. д/приг. р-ра д/инъекц. и инф. 50 мг фл/в компл. с р-лем №1х1 Meone HealthCare Pvt.Ltd Индия",
-        "unitPrice": "164.00000000000"
-      }
-    ]
-  },
-  "currency": "RUB"
+  "positions": [
+    {
+      "positionName": "Наименование предмета закупки",
+      "positionPrice": 12345,
+      "items": [
+        {
+          "steId": 38499393,
+          "steName": "Медеран пор. лиофил. д/приг. р-ра д/инъекц. и инф. 50 мг фл/в компл. с р-лем №1х1 Meone HealthCare Pvt.Ltd Индия",
+          "contractId": "205604468",
+          "contractSigningDate": "2025-01-13 00:00:00.000",
+          "buyerInn": "7720093523",
+          "buyerRegion": "Москва",
+          "count": 100,
+          "unit": "шт.",
+          "unitPrice": "164.00000000000",
+          "nds": "20%"
+        }
+      ]
+    },
+    {
+      "positionName": "Наименование предмета закупки 2",
+      "positionPrice": 24690,
+      "items": [
+        {
+          "steId": 38499393,
+          "steName": "Медеран пор. лиофил. д/приг. р-ра д/инъекц. и инф. 50 мг фл/в компл. с р-лем №1х1 Meone HealthCare Pvt.Ltd Индия",
+          "contractId": "205604587",
+          "contractSigningDate": "2025-01-13 00:00:00.000",
+          "buyerInn": "7720093523",
+          "buyerRegion": "Москва",
+          "count": 150,
+          "unit": "шт.",
+          "unitPrice": "164.00000000000",
+          "nds": "20%"
+        }
+      ]
+    }
+  ],
+  "currency": "RUB",
+  "docType": "docx"
 }
 ```
 
 ## Примеры payload
 
 **Готовый payload (СТЕ)**  
-Файл: `ste_payload_new.json`
+Файл: `ste_price_request_example.json`
 
 Команда:
 ```bash
 curl -X POST http://localhost:8000/api/v1/ste-price-justification/doc \
   -H "Content-Type: application/json" \
-  --data @ste_payload_new.json \
+  --data @ste_price_request_example.json \
   --output ste_price_justification.docx
 ```

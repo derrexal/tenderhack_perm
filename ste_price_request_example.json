@@ -1,0 +1,55 @@
+{
+  "contractName": "Закупка лекарственных средств",
+  "summaryPrice": 5123,
+  "docType": "docx",
+  "positions": [
+    {
+      "positionName": "Медеран лекарство",
+      "positionPrice": 12345,
+      "items": [
+        {
+          "steId": 38499393,
+          "steName": "Медеран пор. лиофил. д/приг. р-ра д/инъекц. и инф. 50 мг фл/в компл. с р-лем №1х1 Meone HealthCare Pvt.Ltd Индия",
+          "contractId": "205604468",
+          "contractSigningDate": "2025-01-13 00:00:00.000",
+          "buyerInn": "7720093523",
+          "count": 100,
+          "unit": "шт.",
+          "buyerRegion": "Москва",
+          "unitPrice": "164.00000000000",
+          "nds": "20%"
+        }
+      ]
+    },
+    {
+      "positionName": "Ибупрофен",
+      "positionPrice": 400,
+      "items": [
+        {
+          "steId": 38499393,
+          "steName": "Ибупрофен пор. лиофил. д/приг. р-ра д/инъекц. и инф. 50 мг фл/в компл. с р-лем №1х1 Meone HealthCare Pvt.Ltd Индия",
+          "contractId": "205604587",
+          "contractSigningDate": "2026-01-13 00:00:00.000",
+          "buyerInn": "7720093523",
+          "count": 150,
+          "unit": "шт.",
+          "buyerRegion": "Орел",
+          "unitPrice": "200",
+          "nds": "10%"
+        },
+          {
+          "steId": 38499393,
+          "steName": "Ибупрофен пор. лиофил. д/приг. р-ра д/инъекц. и инф. 50 мг фл/в компл. с р-лем №1х1 Meone HealthCare Pvt.Ltd Индия",
+          "contractId": "205604587",
+          "contractSigningDate": "2026-01-13 00:00:00.000",
+          "buyerInn": "7720093523",
+          "count": 150,
+          "unit": "шт.",
+          "buyerRegion": "Курск",
+          "unitPrice": "200",
+          "nds": "10%"
+        }
+      ]
+    }
+  ]
+}

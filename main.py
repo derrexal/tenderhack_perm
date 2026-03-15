@@ -7,6 +7,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 import re
+import shutil
+import subprocess
+import tempfile
+from copy import deepcopy
 import threading
 import zipfile
 import xml.etree.ElementTree as ET
@@ -14,13 +18,18 @@ import xml.etree.ElementTree as ET
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.oxml.table import CT_Tbl
+from docx.oxml.text.paragraph import CT_P
 from docx.shared import Cm, Mm, Pt
+from docx.table import Table, _Row
+from docx.text.paragraph import Paragraph
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 DATA_DIR = Path(__file__).parent / "raw_data"
 CONTRACTS_FILE = DATA_DIR / "TenderHack_Контракты_20260313.xlsx"
@@ -30,6 +39,8 @@ TEMPLATE_PATH = Path(__file__).parent / "report_template.docx"
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 SAMPLE_LIMIT = 5
 DEFAULT_CURRENCY = "RUB"
+TABLE_ROW_HEIGHT_CM = 0.7
+PLACEHOLDER_RE = re.compile(r"\{[^}]+\}")
 
 
 class Ste(BaseModel):
@@ -91,32 +102,45 @@ class BatchJustificationRequest(BaseModel):
 
 class StePriceJustificationRow(BaseModel):
     contractId: Optional[str] = None
-    procurementMethod: Optional[str] = None
-    initialContractValue: Optional[str] = None
-    contractValueAfterSigning: Optional[str] = None
-    reductionPercent: Optional[str] = None
     contractSigningDate: Optional[str] = None
     buyerInn: Optional[str] = None
-    supplierInn: Optional[str] = None
-    supplierRegion: Optional[str] = None
-    quantity: Optional[str] = None
+    buyerRegion: Optional[str] = None
+    count: Optional[str] = None
     unit: Optional[str] = None
     steId: Optional[int] = None
-    steItemName: Optional[str] = None
+    steName: Optional[str] = None
     unitPrice: Optional[str] = None
+    nds: Optional[str] = None
+
+    @field_validator("count", mode="before")
+    @classmethod
+    def _cast_qty_to_str(cls, value):
+        if value is None:
+            return None
+        return str(value)
+
+    @field_validator("nds", mode="before")
+    @classmethod
+    def _cast_nds_to_str(cls, value):
+        if value is None:
+            return None
+        return str(value)
 
 
 class StePositionPayload(BaseModel):
-    positionName: str
+    positionName: str = ""
     positionPrice: Optional[Decimal] = None
     items: List[StePriceJustificationRow]
 
 
 class StePriceTemplateRequest(BaseModel):
-    contractName: str
+    contractName: str = ""
     summaryPrice: Decimal
-    position: StePositionPayload
+    positions: List[StePositionPayload]
     currency: str = Field(default=DEFAULT_CURRENCY, description="Код валюты, по умолчанию RUB")
+    docType: Optional[str] = Field(
+        default=None, description="Формат документа: docx, doc, pdf. По умолчанию docx."
+    )
 
 
 @dataclass
@@ -368,14 +392,63 @@ def amount_to_rubles_words(amount: Decimal) -> str:
     return f"{rubles_words} {rubles_word} {kopeks:02d} {kopeks_word}"
 
 
+def _replace_placeholders_in_paragraph(paragraph, mapping: Dict[str, str]) -> None:
+    if not paragraph.runs:
+        return
+    full_text = "".join(run.text for run in paragraph.runs)
+    if "{" not in full_text:
+        return
+    matches = list(PLACEHOLDER_RE.finditer(full_text))
+    if not matches:
+        return
+
+    run_spans = []
+    pos = 0
+    for run in paragraph.runs:
+        start = pos
+        end = pos + len(run.text)
+        run_spans.append((run, start, end))
+        pos = end
+
+    for match in reversed(matches):
+        key = match.group(0)[1:-1].strip()
+        if key not in mapping:
+            continue
+        replacement = mapping.get(key, "")
+
+        first = None
+        last = None
+        for idx, (run, start, end) in enumerate(run_spans):
+            if end <= match.start():
+                continue
+            if start >= match.end():
+                break
+            if first is None:
+                first = idx
+            last = idx
+
+        if first is None or last is None:
+            continue
+
+        first_run, f_start, f_end = run_spans[first]
+        last_run, l_start, l_end = run_spans[last]
+
+        prefix = first_run.text[: max(0, match.start() - f_start)]
+        suffix = last_run.text[max(0, match.end() - l_start) :]
+
+        if first == last:
+            first_run.text = prefix + replacement + suffix
+        else:
+            first_run.text = prefix + replacement
+            last_run.text = suffix
+            for idx in range(first + 1, last):
+                run_spans[idx][0].text = ""
+
+
 def _replace_in_paragraph(paragraph, replacements: Dict[str, str]) -> None:
     if not paragraph.text:
         return
-    text = paragraph.text
-    for key, value in replacements.items():
-        text = text.replace(key, value)
-    if text != paragraph.text:
-        paragraph.text = text
+    _replace_placeholders_in_paragraph(paragraph, replacements)
 
 
 def _replace_placeholders(doc: Document, replacements: Dict[str, str]) -> None:
@@ -388,24 +461,58 @@ def _replace_placeholders(doc: Document, replacements: Dict[str, str]) -> None:
                     _replace_in_paragraph(paragraph, replacements)
 
 
-def _update_summary_paragraph(doc: Document, summary_price: Decimal) -> None:
-    price_text = format_decimal(summary_price)
-    words = amount_to_rubles_words(summary_price)
-    target = "Начальная (максимальная) цена контракта составляет:"
-    new_text = f"{target} {price_text} ({words})."
+def _replace_placeholders_sequence(doc: Document, replacements: Dict[str, List[str]]) -> None:
+    counters = {key: 0 for key in replacements}
+
     for paragraph in doc.paragraphs:
-        if target in paragraph.text:
-            paragraph.text = new_text
-            break
-
-
-def _update_report_date(doc: Document, report_date: str) -> None:
+        for run in paragraph.runs:
+            for key, values in replacements.items():
+                while key in run.text:
+                    idx = counters[key]
+                    value = values[idx] if idx < len(values) else ""
+                    run.text = run.text.replace(key, value, 1)
+                    counters[key] += 1
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                if "Дата формирования обоснования" in cell.text:
-                    row.cells[-1].text = report_date
-                    return
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        for key, values in replacements.items():
+                            while key in run.text:
+                                idx = counters[key]
+                                value = values[idx] if idx < len(values) else ""
+                                run.text = run.text.replace(key, value, 1)
+                                counters[key] += 1
+
+
+def _collect_placeholders_from_runs(runs) -> List[str]:
+    text = "".join(run.text or "" for run in runs)
+    keys = []
+    for match in PLACEHOLDER_RE.findall(text):
+        keys.append(match[1:-1].strip())
+    return keys
+
+
+def _collect_placeholders_from_paragraph(paragraph) -> List[str]:
+    return _collect_placeholders_from_runs(paragraph.runs)
+
+
+def _collect_placeholders_from_table(table) -> List[str]:
+    keys: List[str] = []
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                keys.extend(_collect_placeholders_from_paragraph(paragraph))
+    return keys
+
+
+def _collect_placeholders_from_doc(doc: Document) -> List[str]:
+    keys: List[str] = []
+    for paragraph in doc.paragraphs:
+        keys.extend(_collect_placeholders_from_paragraph(paragraph))
+    for table in doc.tables:
+        keys.extend(_collect_placeholders_from_table(table))
+    return keys
 
 
 def _is_items_table(table) -> bool:
@@ -416,40 +523,117 @@ def _is_items_table(table) -> bool:
     return len(normalized) >= 3 and "№" in normalized[0] and "идентификатор сте" in normalized[1]
 
 
+def _normalize_header(text: str) -> str:
+    cleaned = text.replace("ё", "е").lower()
+    cleaned = re.sub(r"\\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _fill_items_table(
     table,
     items: List[StePriceJustificationRow],
-    summary_price: Optional[Decimal],
+    position_price: Optional[Decimal],
 ) -> None:
+    if not table.rows:
+        raise ValueError("Таблица в шаблоне пуста.")
+
+    item_row = None
+    summary_row = None
+    for row in table.rows:
+        keys = _collect_placeholders_from_runs(
+            [run for cell in row.cells for p in cell.paragraphs for run in p.runs]
+        )
+        if keys and "positionPrice" not in keys:
+            item_row = row
+        if "positionPrice" in keys:
+            summary_row = row
+
+    if item_row is None:
+        raise ValueError("В шаблоне не найдена строка с плейсхолдерами для позиций.")
+    if summary_row is None:
+        raise ValueError("В шаблоне не найдена строка с плейсхолдером positionPrice.")
+
+    keep_trs = {table.rows[0]._tr, item_row._tr, summary_row._tr}
+    for row in list(table.rows)[::-1]:
+        if row._tr not in keep_trs:
+            table._tbl.remove(row._tr)
+    table.__dict__.pop("rows", None)
+
+    item_row_template = deepcopy(item_row._tr)
+
+    item_placeholders = set(
+        _collect_placeholders_from_runs(
+            [run for cell in item_row.cells for p in cell.paragraphs for run in p.runs]
+        )
+    )
+
+    def item_mapping(item: StePriceJustificationRow) -> Dict[str, str]:
+        return {
+            "steId": str(item.steId) if item.steId is not None else "",
+            "steName": item.steName or "",
+            "contractId": item.contractId or "",
+            "contractSigningDate": format_optional_date(item.contractSigningDate),
+            "buyerInn": item.buyerInn or "",
+            "count": item.count or "",
+            "unit": item.unit or "",
+            "buyerRegion": item.buyerRegion or "",
+            "unitPrice": format_optional_decimal(item.unitPrice),
+            "nds": item.nds or "",
+        }
+
+    def validate_item_placeholders(mapping: Dict[str, str]) -> None:
+        missing = [k for k in item_placeholders if mapping.get(k, "") == ""]
+        extra = [k for k, v in mapping.items() if v and k not in item_placeholders]
+        if missing or extra:
+            parts = []
+            if missing:
+                parts.append(f"не переданы: {', '.join(sorted(missing))}")
+            if extra:
+                parts.append(f"лишние: {', '.join(sorted(extra))}")
+            raise ValueError("Некорректные поля для строки таблицы: " + "; ".join(parts))
+
+    mapping_first = item_mapping(items[0])
+    validate_item_placeholders(mapping_first)
+    for cell in item_row.cells:
+        for paragraph in cell.paragraphs:
+            _replace_placeholders_in_paragraph(paragraph, mapping_first)
+
+    summary_keys = set(
+        _collect_placeholders_from_runs(
+            [run for cell in summary_row.cells for p in cell.paragraphs for run in p.runs]
+        )
+    )
+    summary_mapping = {
+        "positionPrice": format_decimal(position_price) if position_price is not None else ""
+    }
+    if "positionPrice" in summary_keys and summary_mapping["positionPrice"] == "":
+        raise ValueError("positionPrice обязателен, так как используется в шаблоне.")
+    if "positionPrice" not in summary_keys and summary_mapping["positionPrice"] != "":
+        raise ValueError("positionPrice передан, но отсутствует в шаблоне.")
+    for cell in summary_row.cells:
+        for paragraph in cell.paragraphs:
+            _replace_placeholders_in_paragraph(paragraph, summary_mapping)
+
+    summary_tr = summary_row._tr
+    for item_idx, item in enumerate(items[1:], start=2):
+        new_tr = deepcopy(item_row_template)
+        summary_tr.addprevious(new_tr)
+        table.__dict__.pop("rows", None)
+        new_row = _Row(new_tr, table)
+        mapping = item_mapping(item)
+        validate_item_placeholders(mapping)
+        for cell in new_row.cells:
+            for paragraph in cell.paragraphs:
+                _replace_placeholders_in_paragraph(paragraph, mapping)
+
+
+def _clear_items_table(table) -> None:
     while len(table.rows) > 1:
         table._tbl.remove(table.rows[1]._tr)
 
-    for idx, item in enumerate(items, start=1):
-        row = table.add_row()
-        values = [
-            str(idx),
-            str(item.steId) if item.steId is not None else "",
-            item.steItemName or "",
-            item.contractId or "",
-            format_optional_date(item.contractSigningDate),
-            item.supplierInn or "",
-            item.quantity or "",
-            item.unit or "",
-            item.supplierRegion or "",
-            format_optional_decimal(item.unitPrice),
-        ]
-        for cell, value in zip(row.cells, values):
-            cell.text = value
 
-    if summary_price is not None and len(table.columns) >= 10:
-        summary_row = table.add_row()
-        for cell in summary_row.cells:
-            cell.text = ""
-        summary_row.cells[0].text = "начальная (максимальная) цена контракта"
-        merged = summary_row.cells[0]
-        for idx in range(1, 9):
-            merged = merged.merge(summary_row.cells[idx])
-        summary_row.cells[9].text = format_decimal(summary_price)
+def _set_position_heading_text(paragraph: Paragraph, position_name: str) -> None:
+    _replace_in_paragraph(paragraph, {"предмет закупки": position_name or ""})
 
 
 def currency_label(code: str) -> str:
@@ -549,12 +733,44 @@ def _ensure_table_style(styles, name: str, base: str = "Table Grid") -> None:
     style._element.append(tbl_style_pr)
 
 
+def apply_uniform_font_and_table_formatting(doc: Document, font_name: str = "Times New Roman") -> None:
+    return
+
+
 def _set_repeat_table_header(row) -> None:
     tr = row._tr
     tr_pr = tr.get_or_add_trPr()
     header = OxmlElement("w:tblHeader")
     header.set(qn("w:val"), "true")
     tr_pr.append(header)
+
+
+def _iter_block_items(doc: Document):
+    for child in doc.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, doc)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, doc)
+
+
+def _find_position_blocks(doc: Document) -> List[Tuple[Paragraph, Table]]:
+    blocks: List[Tuple[Paragraph, Table]] = []
+    current_paragraph: Optional[Paragraph] = None
+    for block in _iter_block_items(doc):
+        if isinstance(block, Paragraph):
+            if "Расчет начальной (максимальной) цены" in (block.text or ""):
+                current_paragraph = block
+        elif isinstance(block, Table) and current_paragraph is not None:
+            if _is_items_table(block):
+                blocks.append((current_paragraph, block))
+                current_paragraph = None
+    return blocks
+
+
+def _insert_after(element, new_element) -> None:
+    element.addnext(new_element)
+
+
 
 
 class RtfBuilder:
@@ -1239,22 +1455,130 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
     doc = Document(TEMPLATE_PATH)
     today = date.today().strftime("%d.%m.%Y")
 
-    replacements = {
-        "{наименование закупки}": payload.contractName,
-        "{предмет закупки}": payload.position.positionName,
+    placeholders_in_doc = set(_collect_placeholders_from_doc(doc))
+    allowed_placeholders = {
+        "наименование закупки",
+        "предмет закупки",
+        "summaryPrice",
+        "сумма русскими словами",
+        "today",
+        "steId",
+        "steName",
+        "contractId",
+        "contractSigningDate",
+        "buyerInn",
+        "count",
+        "unit",
+        "buyerRegion",
+        "unitPrice",
+        "nds",
+        "positionPrice",
     }
-    _replace_placeholders(doc, replacements)
-    _update_summary_paragraph(doc, payload.summaryPrice)
-    _update_report_date(doc, today)
+    unknown = placeholders_in_doc - allowed_placeholders
+    if unknown:
+        raise ValueError(
+            "Неизвестные плейсхолдеры в шаблоне: " + ", ".join(sorted(unknown))
+        )
 
-    items = payload.position.items
-    for table in doc.tables:
-        if _is_items_table(table):
-            _fill_items_table(table, items, payload.summaryPrice)
+    replacements = {
+        "наименование закупки": payload.contractName or "",
+        "summaryPrice": format_decimal(payload.summaryPrice),
+        "сумма русскими словами": f"({amount_to_rubles_words(payload.summaryPrice)})",
+        "today": today,
+    }
+    extra_global = [k for k, v in replacements.items() if v and k not in placeholders_in_doc]
+    if extra_global:
+        raise ValueError(
+            "Плейсхолдеры отсутствуют в шаблоне: " + ", ".join(sorted(extra_global))
+        )
+    missing_global = [k for k in ("наименование закупки",) if k in placeholders_in_doc and not replacements[k]]
+    if missing_global:
+        raise ValueError(
+            "Не заполнены обязательные поля: " + ", ".join(sorted(missing_global))
+        )
+    _replace_placeholders(doc, replacements)
+
+    blocks = _find_position_blocks(doc)
+    if not blocks:
+        raise ValueError("В шаблоне не найдено ни одной секции с расчетом НМЦК и таблицей.")
+
+    prototype_paragraph, prototype_table = blocks[0]
+    paragraph_template_el = deepcopy(prototype_paragraph._element)
+    table_template_el = deepcopy(prototype_table._element)
+
+    for extra_paragraph, extra_table in blocks[1:]:
+        extra_paragraph._element.getparent().remove(extra_paragraph._element)
+        extra_table._element.getparent().remove(extra_table._element)
+
+    pos_keys = set(_collect_placeholders_from_paragraph(prototype_paragraph))
+    if "предмет закупки" in pos_keys and not payload.positions[0].positionName:
+        raise ValueError("positionName обязателен, так как используется в шаблоне.")
+    if "предмет закупки" not in pos_keys and payload.positions[0].positionName:
+        raise ValueError("positionName передан, но отсутствует в шаблоне.")
+    _set_position_heading_text(prototype_paragraph, payload.positions[0].positionName)
+    _fill_items_table(
+        prototype_table, payload.positions[0].items, payload.positions[0].positionPrice
+    )
+
+    insert_after_element = prototype_table._element
+    for position in payload.positions[1:]:
+        new_paragraph_el = deepcopy(paragraph_template_el)
+        _insert_after(insert_after_element, new_paragraph_el)
+        new_paragraph = Paragraph(new_paragraph_el, doc)
+        if "предмет закупки" in pos_keys and not position.positionName:
+            raise ValueError("positionName обязателен, так как используется в шаблоне.")
+        if "предмет закупки" not in pos_keys and position.positionName:
+            raise ValueError("positionName передан, но отсутствует в шаблоне.")
+        _set_position_heading_text(new_paragraph, position.positionName)
+
+        new_table_el = deepcopy(table_template_el)
+        _insert_after(new_paragraph_el, new_table_el)
+        new_table = Table(new_table_el, doc)
+        _fill_items_table(new_table, position.items, position.positionPrice)
+
+        insert_after_element = new_table_el
 
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
+
+
+def convert_docx_bytes(docx_bytes: bytes, target_ext: str) -> bytes:
+    target_ext = target_ext.lower()
+    if target_ext not in {"doc", "pdf"}:
+        raise ValueError(f"Неподдерживаемый формат конвертации: {target_ext}")
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        raise RuntimeError("LibreOffice (soffice) не найден для конвертации документа.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        input_path = tmp_path / "document.docx"
+        input_path.write_bytes(docx_bytes)
+
+        cmd = [
+            soffice,
+            "--headless",
+            "--convert-to",
+            target_ext,
+            "--outdir",
+            tmp_dir,
+            str(input_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Ошибка конвертации в {target_ext}: {result.stderr.strip() or result.stdout.strip()}"
+            )
+
+        output_candidates = list(tmp_path.glob(f"document.{target_ext}"))
+        if not output_candidates:
+            output_candidates = list(tmp_path.glob(f"*.{target_ext}"))
+        if not output_candidates:
+            raise RuntimeError(f"Конвертация в {target_ext} не создала файл.")
+
+        return output_candidates[0].read_bytes()
 
 
 app = FastAPI(title="TenderHack Price Justification")
@@ -1262,17 +1586,48 @@ app = FastAPI(title="TenderHack Price Justification")
 
 @app.post("/api/v1/ste-price-justification/doc")
 async def generate_ste_price_justification(payload: StePriceTemplateRequest) -> Response:
-    if not payload.position.items:
-        raise HTTPException(status_code=400, detail="position.items не должен быть пустым")
+    if not payload.positions:
+        raise HTTPException(status_code=400, detail="positions не должен быть пустым")
+    for idx, position in enumerate(payload.positions, start=1):
+        if not position.items:
+            raise HTTPException(
+                status_code=400, detail=f"positions[{idx}].items не должен быть пустым"
+            )
 
-    doc_content = build_ste_price_docx_from_template(payload)
-    filename = "ste_price_justification.docx"
+    try:
+        docx_content = build_ste_price_docx_from_template(payload)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    doc_type = (payload.docType or "docx").lower()
+    if doc_type not in {"docx", "doc", "pdf"}:
+        raise HTTPException(status_code=400, detail="docType должен быть docx, doc или pdf")
+
+    if doc_type == "docx":
+        filename = "ste_price_justification.docx"
+        headers = {"Content-Disposition": f"attachment; filename={filename}"}
+        return Response(
+            content=docx_content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers=headers,
+        )
+
+    try:
+        converted = convert_docx_bytes(docx_content, doc_type)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if doc_type == "doc":
+        media_type = "application/msword"
+        filename = "ste_price_justification.doc"
+    else:
+        media_type = "application/pdf"
+        filename = "ste_price_justification.pdf"
+
     headers = {"Content-Disposition": f"attachment; filename={filename}"}
-    return Response(
-        content=doc_content,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers=headers,
-    )
+    return Response(content=converted, media_type=media_type, headers=headers)
 
 
 if __name__ == "__main__":
