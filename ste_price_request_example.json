@@ -6,6 +6,7 @@
     {
       "positionName": "Медеран лекарство",
       "positionPrice": 12345,
+      "positionCount": 10,
       "items": [
         {
           "steId": 38499393,
@@ -24,6 +25,7 @@
     {
       "positionName": "Ибупрофен",
       "positionPrice": 400,
+      "positionCount": 10,
       "items": [
         {
           "steId": 38499393,

@@ -137,7 +137,15 @@ class StePriceJustificationRow(BaseModel):
 class StePositionPayload(BaseModel):
     positionName: str = ""
     positionPrice: Optional[Decimal] = None
+    positionCount: Optional[str] = None
     items: List[StePriceJustificationRow]
+
+    @field_validator("positionCount", mode="before")
+    @classmethod
+    def _cast_position_count_to_str(cls, value):
+        if value is None:
+            return None
+        return str(value)
 
 
 class StePriceTemplateRequest(BaseModel):
@@ -663,8 +671,16 @@ def _clear_items_table(table) -> None:
         table._tbl.remove(table.rows[1]._tr)
 
 
-def _set_position_heading_text(paragraph: Paragraph, position_name: str) -> None:
-    _replace_in_paragraph(paragraph, {"предмет закупки": position_name or ""})
+def _set_position_heading_text(
+    paragraph: Paragraph, position_name: str, position_count: Optional[str]
+) -> None:
+    _replace_in_paragraph(
+        paragraph,
+        {
+            "предмет закупки": position_name or "",
+            "кол-во предмета закупки": position_count or "",
+        },
+    )
 
 
 def currency_label(code: str) -> str:
@@ -1515,6 +1531,7 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
     allowed_placeholders = {
         "наименование закупки",
         "предмет закупки",
+        "кол-во предмета закупки",
         "summaryPrice",
         "сумма русскими словами",
         "today",
@@ -1569,6 +1586,7 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
 
     pos_keys = set(_collect_placeholders_from_paragraph(prototype_paragraph))
     needs_heading = "предмет закупки" in pos_keys
+    needs_position_count = "кол-во предмета закупки" in pos_keys
 
     first_position = payload.positions[0]
     if not first_position.items:
@@ -1585,7 +1603,13 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
             raise ValueError("positionName обязателен, так как используется в шаблоне.")
         if not needs_heading and first_position.positionName:
             raise ValueError("positionName передан, но отсутствует в шаблоне.")
-        _set_position_heading_text(prototype_paragraph, first_position.positionName)
+        if needs_position_count and not first_position.positionCount:
+            raise ValueError("positionCount обязателен, так как используется в шаблоне.")
+        if not needs_position_count and first_position.positionCount:
+            raise ValueError("positionCount передан, но отсутствует в шаблоне.")
+        _set_position_heading_text(
+            prototype_paragraph, first_position.positionName, first_position.positionCount
+        )
         _fill_items_table(
             prototype_table, first_position.items, first_position.positionPrice
         )
@@ -1608,7 +1632,13 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
             raise ValueError("positionName обязателен, так как используется в шаблоне.")
         if not needs_heading and position.positionName:
             raise ValueError("positionName передан, но отсутствует в шаблоне.")
-        _set_position_heading_text(new_paragraph, position.positionName)
+        if needs_position_count and not position.positionCount:
+            raise ValueError("positionCount обязателен, так как используется в шаблоне.")
+        if not needs_position_count and position.positionCount:
+            raise ValueError("positionCount передан, но отсутствует в шаблоне.")
+        _set_position_heading_text(
+            new_paragraph, position.positionName, position.positionCount
+        )
 
         new_table_el = deepcopy(table_template_el)
         _insert_after(new_paragraph_el, new_table_el)
