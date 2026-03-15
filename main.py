@@ -574,10 +574,23 @@ def _fill_items_table(
         )
     )
 
+    def _set_row_index(row, index_value: int) -> None:
+        if not row.cells:
+            return
+        cell = row.cells[0]
+        if cell.paragraphs:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.text = ""
+            cell.paragraphs[0].text = str(index_value)
+        else:
+            cell.text = str(index_value)
+
+    optional_placeholders = {"steName", "nds"}
+
     def item_mapping(item: StePriceJustificationRow) -> Dict[str, str]:
-        mapping = {
+        values = {
             "steId": str(item.steId) if item.steId is not None else "",
-            "steName": item.steName or "",
             "contractId": item.contractId or "",
             "contractSigningDate": format_optional_date(item.contractSigningDate),
             "buyerInn": item.buyerInn or "",
@@ -586,13 +599,19 @@ def _fill_items_table(
             "buyerRegion": item.buyerRegion or "",
             "unitPrice": format_optional_decimal(item.unitPrice),
         }
+        # steName и nds не заполняются даже если пришли в payload.
+        if "steName" in item_placeholders:
+            values["steName"] = ""
         if "nds" in item_placeholders:
-            nds_value = (item.nds or "").strip()
-            mapping["nds"] = nds_value if nds_value else "Без НДС"
-        return mapping
+            values["nds"] = ""
+        return {key: values.get(key, "") for key in item_placeholders}
 
     def validate_item_placeholders(mapping: Dict[str, str]) -> None:
-        missing = [k for k in item_placeholders if mapping.get(k, "") == ""]
+        missing = [
+            k
+            for k in item_placeholders
+            if mapping.get(k, "") == "" and k not in optional_placeholders
+        ]
         extra = [k for k, v in mapping.items() if v and k not in item_placeholders]
         if missing or extra:
             parts = []
@@ -607,6 +626,7 @@ def _fill_items_table(
     for cell in item_row.cells:
         for paragraph in cell.paragraphs:
             _replace_placeholders_in_paragraph(paragraph, mapping_first)
+    _set_row_index(item_row, 1)
 
     summary_keys = set(
         _collect_placeholders_from_runs(
@@ -635,6 +655,7 @@ def _fill_items_table(
         for cell in new_row.cells:
             for paragraph in cell.paragraphs:
                 _replace_placeholders_in_paragraph(paragraph, mapping)
+        _set_row_index(new_row, item_idx)
 
 
 def _clear_items_table(table) -> None:
