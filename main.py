@@ -126,6 +126,13 @@ class StePriceJustificationRow(BaseModel):
             return None
         return str(value)
 
+    @field_validator("unitPrice", mode="before")
+    @classmethod
+    def _cast_unit_price_to_str(cls, value):
+        if value is None:
+            return None
+        return str(value)
+
 
 class StePositionPayload(BaseModel):
     positionName: str = ""
@@ -568,7 +575,7 @@ def _fill_items_table(
     )
 
     def item_mapping(item: StePriceJustificationRow) -> Dict[str, str]:
-        return {
+        mapping = {
             "steId": str(item.steId) if item.steId is not None else "",
             "steName": item.steName or "",
             "contractId": item.contractId or "",
@@ -578,8 +585,11 @@ def _fill_items_table(
             "unit": item.unit or "",
             "buyerRegion": item.buyerRegion or "",
             "unitPrice": format_optional_decimal(item.unitPrice),
-            "nds": item.nds or "",
         }
+        if "nds" in item_placeholders:
+            nds_value = (item.nds or "").strip()
+            mapping["nds"] = nds_value if nds_value else "Без НДС"
+        return mapping
 
     def validate_item_placeholders(mapping: Dict[str, str]) -> None:
         missing = [k for k in item_placeholders if mapping.get(k, "") == ""]
@@ -770,6 +780,31 @@ def _find_position_blocks(doc: Document) -> List[Tuple[Paragraph, Table]]:
 def _insert_after(element, new_element) -> None:
     element.addnext(new_element)
 
+
+def _insert_before(element, new_element) -> None:
+    element.addprevious(new_element)
+
+
+def _get_message_paragraph_template(doc: Document) -> Paragraph:
+    for paragraph in doc.paragraphs:
+        if paragraph.style and paragraph.style.name in {"Основной текст1", "Основной текст"}:
+            return paragraph
+    for paragraph in doc.paragraphs:
+        if paragraph.text.strip():
+            return paragraph
+    raise ValueError("В шаблоне не найден подходящий абзац для вставки сообщения.")
+
+
+def _build_no_items_message(position: StePositionPayload) -> str:
+    if not position.positionName:
+        raise ValueError("positionName обязателен, так как items пуст.")
+    if position.positionPrice is None:
+        raise ValueError("positionPrice обязателен, так как items пуст.")
+    price_text = format_decimal(position.positionPrice)
+    return (
+        f"Данных для рассчета НПМЦ товара {position.positionName} недостаточно, "
+        f"выставлено ручное значение {price_text}."
+    )
 
 
 
@@ -1505,29 +1540,52 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
     prototype_paragraph, prototype_table = blocks[0]
     paragraph_template_el = deepcopy(prototype_paragraph._element)
     table_template_el = deepcopy(prototype_table._element)
+    message_paragraph_template_el = deepcopy(_get_message_paragraph_template(doc)._element)
 
     for extra_paragraph, extra_table in blocks[1:]:
         extra_paragraph._element.getparent().remove(extra_paragraph._element)
         extra_table._element.getparent().remove(extra_table._element)
 
     pos_keys = set(_collect_placeholders_from_paragraph(prototype_paragraph))
-    if "предмет закупки" in pos_keys and not payload.positions[0].positionName:
-        raise ValueError("positionName обязателен, так как используется в шаблоне.")
-    if "предмет закупки" not in pos_keys and payload.positions[0].positionName:
-        raise ValueError("positionName передан, но отсутствует в шаблоне.")
-    _set_position_heading_text(prototype_paragraph, payload.positions[0].positionName)
-    _fill_items_table(
-        prototype_table, payload.positions[0].items, payload.positions[0].positionPrice
-    )
+    needs_heading = "предмет закупки" in pos_keys
 
-    insert_after_element = prototype_table._element
+    first_position = payload.positions[0]
+    if not first_position.items:
+        message_text = _build_no_items_message(first_position)
+        message_el = deepcopy(message_paragraph_template_el)
+        _insert_before(prototype_table._element, message_el)
+        message_paragraph = Paragraph(message_el, doc)
+        message_paragraph.text = message_text
+        prototype_paragraph._element.getparent().remove(prototype_paragraph._element)
+        prototype_table._element.getparent().remove(prototype_table._element)
+        insert_after_element = message_el
+    else:
+        if needs_heading and not first_position.positionName:
+            raise ValueError("positionName обязателен, так как используется в шаблоне.")
+        if not needs_heading and first_position.positionName:
+            raise ValueError("positionName передан, но отсутствует в шаблоне.")
+        _set_position_heading_text(prototype_paragraph, first_position.positionName)
+        _fill_items_table(
+            prototype_table, first_position.items, first_position.positionPrice
+        )
+        insert_after_element = prototype_table._element
+
     for position in payload.positions[1:]:
+        if not position.items:
+            message_text = _build_no_items_message(position)
+            message_el = deepcopy(message_paragraph_template_el)
+            _insert_after(insert_after_element, message_el)
+            message_paragraph = Paragraph(message_el, doc)
+            message_paragraph.text = message_text
+            insert_after_element = message_el
+            continue
+
         new_paragraph_el = deepcopy(paragraph_template_el)
         _insert_after(insert_after_element, new_paragraph_el)
         new_paragraph = Paragraph(new_paragraph_el, doc)
-        if "предмет закупки" in pos_keys and not position.positionName:
+        if needs_heading and not position.positionName:
             raise ValueError("positionName обязателен, так как используется в шаблоне.")
-        if "предмет закупки" not in pos_keys and position.positionName:
+        if not needs_heading and position.positionName:
             raise ValueError("positionName передан, но отсутствует в шаблоне.")
         _set_position_heading_text(new_paragraph, position.positionName)
 
@@ -1590,9 +1648,13 @@ async def generate_ste_price_justification(payload: StePriceTemplateRequest) -> 
         raise HTTPException(status_code=400, detail="positions не должен быть пустым")
     for idx, position in enumerate(payload.positions, start=1):
         if not position.items:
-            raise HTTPException(
-                status_code=400, detail=f"positions[{idx}].items не должен быть пустым"
-            )
+            if not position.positionName or position.positionPrice is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"positions[{idx}].items пуст, поэтому positionName и positionPrice обязательны"
+                    ),
+                )
 
     try:
         docx_content = build_ste_price_docx_from_template(payload)
