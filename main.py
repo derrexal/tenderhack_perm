@@ -853,7 +853,7 @@ def _build_no_items_message(position: StePositionPayload) -> str:
     )
     total_text = format_decimal(total)
     return (
-        f"Данных для рассчета НПМЦ товара {position.positionName} недостаточно, "
+        f"Данных для рассчета НМЦК товара {position.positionName} недостаточно, "
         f"выставлено ручное значение {price_text}. "
         f"Итоговая сумма {price_text} x {position.positionCount} = {total_text}."
     )
