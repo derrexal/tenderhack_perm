@@ -672,13 +672,17 @@ def _clear_items_table(table) -> None:
 
 
 def _set_position_heading_text(
-    paragraph: Paragraph, position_name: str, position_count: Optional[str]
+    paragraph: Paragraph,
+    position_name: str,
+    position_count: Optional[str],
+    unit_value: Optional[str],
 ) -> None:
     _replace_in_paragraph(
         paragraph,
         {
             "предмет закупки": position_name or "",
             "кол-во предмета закупки": position_count or "",
+            "ед.измерения": unit_value or "",
         },
     )
 
@@ -1532,6 +1536,7 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
         "наименование закупки",
         "предмет закупки",
         "кол-во предмета закупки",
+        "ед.измерения",
         "summaryPrice",
         "сумма русскими словами",
         "today",
@@ -1587,6 +1592,7 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
     pos_keys = set(_collect_placeholders_from_paragraph(prototype_paragraph))
     needs_heading = "предмет закупки" in pos_keys
     needs_position_count = "кол-во предмета закупки" in pos_keys
+    needs_unit = "ед.измерения" in pos_keys
 
     first_position = payload.positions[0]
     if not first_position.items:
@@ -1607,8 +1613,14 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
             raise ValueError("positionCount обязателен, так как используется в шаблоне.")
         if not needs_position_count and first_position.positionCount:
             raise ValueError("positionCount передан, но отсутствует в шаблоне.")
+        unit_value = first_position.items[0].unit if first_position.items else None
+        if needs_unit and not unit_value:
+            raise ValueError("unit обязателен, так как используется в заголовке таблицы.")
         _set_position_heading_text(
-            prototype_paragraph, first_position.positionName, first_position.positionCount
+            prototype_paragraph,
+            first_position.positionName,
+            first_position.positionCount,
+            unit_value,
         )
         _fill_items_table(
             prototype_table, first_position.items, first_position.positionPrice
@@ -1636,8 +1648,14 @@ def build_ste_price_docx_from_template(payload: StePriceTemplateRequest) -> byte
             raise ValueError("positionCount обязателен, так как используется в шаблоне.")
         if not needs_position_count and position.positionCount:
             raise ValueError("positionCount передан, но отсутствует в шаблоне.")
+        unit_value = position.items[0].unit if position.items else None
+        if needs_unit and not unit_value:
+            raise ValueError("unit обязателен, так как используется в заголовке таблицы.")
         _set_position_heading_text(
-            new_paragraph, position.positionName, position.positionCount
+            new_paragraph,
+            position.positionName,
+            position.positionCount,
+            unit_value,
         )
 
         new_table_el = deepcopy(table_template_el)
